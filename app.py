@@ -10,6 +10,65 @@ import requests
 from PIL import Image
 from io import BytesIO
 import os
+import pytesseract
+import subprocess
+import time
+from collections import deque
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# --- Rate Limiter ---
+class RateLimiter:
+    def __init__(self, max_calls, per_seconds):
+        self.max_calls = max_calls
+        self.per = per_seconds
+        self.calls = deque()
+
+    def wait(self):
+        now = time.time()
+        while self.calls and now - self.calls[0] > self.per:
+            self.calls.popleft()
+        if len(self.calls) >= self.max_calls:
+            sleep_for = self.per - (now - self.calls[0])
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+        self.calls.append(time.time())
+
+# Example: 8 requests per 60 seconds
+limiter = RateLimiter(8, 60)
+
+def safe_generate(model, prompt):
+    limiter.wait()
+    return model.generate_content(prompt)
+
+# --- Spline 3D Interactive Background for All Tabs ---
+st.markdown("""
+<style>
+.spline-bg {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100vw; height: 100vh;
+  z-index: 0;
+  pointer-events: auto; /* Make it interactive */
+  overflow: hidden;
+}
+.spline-bg iframe {
+  width: 100vw;
+  height: 100vh;
+  border: none;
+}
+.stApp {
+  background: transparent !important;
+}
+</style>
+<div class="spline-bg">
+  <iframe src="https://my.spline.design/claritystream-ZhzKztTh2rQTb2bqTzAKfHpQ/" allowfullscreen></iframe>
+</div>
+""", unsafe_allow_html=True)
+
+
+# ...rest of your tab code...
 
 def generate_image_colab(prompt, negative_prompt, api_url):
     data = {"prompt": prompt, "negative_prompt": negative_prompt}
@@ -93,11 +152,11 @@ tab1, tab2, tab3 = st.tabs(
         "📄 PDF Q&A",
         "💬 General Chatbot",
         "🕶️ Text-to-Image"
+        
     ]
 )
 
 with tab1:
-    st.markdown("### Upload PDF files")
     uploaded_files = st.file_uploader("", type="pdf", accept_multiple_files=True)
     pdf_texts = []
     pdf_names = []
@@ -105,7 +164,19 @@ with tab1:
     if uploaded_files:
         for uploaded_file in uploaded_files:
             doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            text = "".join(page.get_text() for page in doc)
+            text = ""
+            for page in doc:
+                page_text = page.get_text()
+                if page_text.strip():
+                    text += page_text
+                else:
+                    # If no text found, try OCR on the page image
+                    pix = page.get_pixmap()
+                    img = Image.open(BytesIO(pix.tobytes()))
+                    # Uncomment and set the path below if needed:
+                    # pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+                    ocr_text = pytesseract.image_to_string(img)
+                    text += ocr_text
             pdf_texts.append(text)
             pdf_names.append(uploaded_file.name)
         st.markdown("### Select PDF to query:")
@@ -142,7 +213,7 @@ with tab1:
                     context = "\n".join(retrieved_chunks)
 
                     # LLM answer generation (Gemini)
-                    genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+                    genai.configure(api_key=os.environ.get("AIzaSyCFMPwoQZMP1UprOGxj6gedQHAWrIbZ4W0"))
                     model = genai.GenerativeModel("gemini-2.5-flash")
                     prompt = f"{context}\n\nQuestion: {question}\nAnswer:"
                     with st.spinner("Generating answer..."):
@@ -165,7 +236,7 @@ with tab1:
                     st.markdown("---")
 
 with tab2:
-    genai.configure(api_key=os.environ["GOOGLE_API_KEY"])
+    genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
     st.markdown('<h4 style="color:rgb(0,0,0);background-color:rgba(255,160,122,0.2);">Ask anything (General Chatbot):</h4>', unsafe_allow_html=True)
     user_input = st.text_area("", key="general_question")
     model = genai.GenerativeModel("gemini-2.5-flash")
